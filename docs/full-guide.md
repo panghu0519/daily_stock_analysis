@@ -169,6 +169,7 @@ daily_stock_analysis/
 | `TUSHARE_TOKEN` | [Tushare Pro](https://tushare.pro/weborder/#/login?reg=834638 ) Token | 可选 |
 | `TUSHARE_HTTP_URL` | Tushare Pro HTTP 接入地址；留空（或未设置/空白）时使用官方端点 `http://api.tushare.pro`，仅在需通过公司内网代理、跨境网络或自建镜像时填写 `http://` 或 `https://` 开头的完整地址 | 可选 |
 | `TICKFLOW_API_KEY` | [TickFlow](https://tickflow.org) API Key；可选，用于 A 股日 K、实时行情、股票列表/名称与大盘复盘增强；失败或权限不足时自动回退。 | 可选 |
+| `MX_APIKEY` / `MX_PRIORITY` | 妙想（东方财富 MX_API）补充数据源：在东财公开接口失败/限流时兜底获取筹码分布与个股资金流。**严格 opt-in 的第三方能力**：需用户自备 Key（妙想 Skills 页面），限时免费/会员配额策略可能调整、不承诺长期免费；未配置则不启用、行为不变。`MX_PRIORITY` 默认 `6`。GitHub Actions 需在 Secrets 配置 `MX_APIKEY` | 可选 |
 | `LONGBRIDGE_OAUTH_CLIENT_ID` | [Longbridge OpenAPI](https://open.longbridge.com/) OAuth client_id；留空且无 Legacy Access Token 时会兼容使用 `LONGBRIDGE_APP_KEY` | 可选 |
 | `LONGBRIDGE_OAUTH_TOKEN_CACHE_B64` | OAuth token 缓存文件的 base64 内容，供 GitHub Actions / Docker 等 headless 环境恢复 SDK token 缓存 | 可选 |
 | `LONGBRIDGE_APP_KEY` | Longbridge Legacy App Key；无 `LONGBRIDGE_ACCESS_TOKEN` 时也可作为 OAuth client_id 兼容别名 | 可选 |
@@ -184,6 +185,10 @@ daily_stock_analysis/
 | `LONGBRIDGE_PUSH_CANDLESTICK_MODE` | K 线推送模式：`realtime` 或 `confirmed`（默认 `realtime`） | 可选 |
 | `LONGBRIDGE_PRINT_QUOTE_PACKAGES` | 连接时是否打印行情包（未设置时默认 `false`；设为 `1`/`true`/`yes` 开启） | 可选 |
 | `ENABLE_CHIP_DISTRIBUTION` | 启用筹码分布（Actions 默认 false；需筹码数据时在 Variables 中设为 true，接口可能不稳定） | 可选 |
+
+妙想筹码/资金流在同一进程内共享网络请求准入锁：进入查询方法时若已有请求未结束，新查询直接跳过，不在此锁上排队。资金流补充的超时隔离保持到实际后台请求退出，其他数据源仍可回退；不取消已经发出的请求，也不改变管理器原有的筹码调用串行化。该补充源通过能力检查排除所有日线请求，并在选表和解析时统一支持字典/列表形式的 `nameMap`。
+
+妙想资金流仅使用明确的主力净流入金额指标；收盘价、占比及缺失金额不会作为资金流回退值。最新交易日金额缺失时保持未知，5/10 日窗口包含缺失金额时不输出合计，不使用更早日期补位。
 
 > **GitHub Actions：** 仓库自带 `00-daily-analysis.yml` 已把 `TUSHARE_TOKEN`、`TICKFLOW_API_KEY` / `TICKFLOW_*` 和上表中的 `LONGBRIDGE_*` 映射到任务环境。TickFlow 的 API Key 建议放在 **Secrets**，优先级、复权和批量开关可放在 **Variables** 或 **Secrets**。Longbridge OAuth 方式需要一个 client_id（优先 `LONGBRIDGE_OAUTH_CLIENT_ID`；留空且无 Legacy Access Token 时使用 `LONGBRIDGE_APP_KEY` 兼容），并把本机 `~/.longbridge/openapi/tokens/<client_id>` 文件 base64 后保存为 Secret `LONGBRIDGE_OAUTH_TOKEN_CACHE_B64`；Legacy 方式仍可配置 `LONGBRIDGE_APP_KEY`、`LONGBRIDGE_APP_SECRET`、`LONGBRIDGE_ACCESS_TOKEN`。可选接入点变量（如 `LONGBRIDGE_REGION`）可放在 **Variables** 或 **Secrets**。
 
@@ -710,6 +715,7 @@ python scripts/check_env.py --config
 python main.py                        # 完整分析（个股 + 大盘复盘）
 python main.py --market-review        # 仅大盘复盘
 python main.py --no-market-review     # 仅个股分析
+python main.py --etf-rotation         # ETF 轮动信号 + 规则回测（不调用 LLM，见 docs/etf-rotation.md）
 python main.py --stocks 600519,300750 # 指定股票
 python main.py --portfolio futu       # 使用 Futu 真实 LONG 正股持仓（覆盖 --stocks/STOCK_LIST）
 python main.py --dry-run              # 仅获取数据，不 AI 分析
@@ -1667,7 +1673,7 @@ FastAPI 提供 RESTful API 服务，支持配置管理和触发分析。
 - 🧾 **市场复盘历史可复用** - 大盘复盘任务会持久化到分析历史，`report_type` 为 `market_review`，可直接通过历史列表/详情打开对应 Markdown 或详情页，不会重新触发分析重算
 - 🧭 **市场位置卡片** - A 股普通分析报告会展示市场题材层和个股位置层，区分大盘主线、主关联题材、题材阶段、个股位置和缺失证据
 - 🧩 **输入数据块可见** - 普通分析报告会在历史详情、同步响应和 completed 任务状态中返回低敏 `AnalysisContextPack` overview，Web 报告页在策略点位和资讯之后默认折叠展示数据块状态、来源、缺失原因和降级摘要
-- 💬 **问股追问上下文** - 从历史报告进入问股后，后续追问会持续携带当前 `stock_code/stock_name`；切回或重载已有问股会话时，会从已加载的历史用户消息恢复基础当前标的；只有用户明确切换标的时才切换上下文，含比较/对比/vs/差异/相比等明确比较意图或多个非当前明确股票代码的问题不会污染当前标的
+- 💬 **问股主讨论对象** - 服务端接受明确代码或索引中唯一名称后保存对象；普通追问、刷新、重开和切回会话从服务端恢复。明确切股才更新主对象，比较只扩大本轮范围，首次比较不任选一只；报告跳转只是提示，不自行建立已确认状态。模型失败或停止不撤销已接受的对象。
 - 🧠 **会话级 Skill 选择** - 问股会话会持久化当前 Skill 选择；刷新或切换会话时恢复各自选择，新会话继续使用服务器默认 Skill
 - 📈 **回测验证** - 评估历史分析准确率，查询方向胜率与模拟收益
 - 🔗 **API 文档** - 访问 `/docs` 查看 Swagger UI
@@ -1741,9 +1747,9 @@ FastAPI 提供 RESTful API 服务，支持配置管理和触发分析。
 > 说明：`GET /api/v1/usage/dashboard` 复用 `llm_usage` 审计表，不新增配置项或数据库迁移。接口仅返回已落库的调用次数、Prompt/Completion/Total Token 聚合、模型维度用量和最近调用记录，不推导模型上下文窗口或 provider 元数据。
 > 说明（Issue #1520）：列表中的模型名展示字段仅来源于历史快照中的 `model_used`，仅用于历史回溯展示，不影响运行时模型模型路由（`litellm_model`、`llm_model_list`）、Provider、Base URL 与配置迁移/清理语义。回退方式为回退本次提交，现网历史查询/抽屉/接口链路兼容性保持不变。
 > 说明：历史详情、同步分析响应和 completed 任务状态会在 `report.details.analysis_context_pack_overview` 返回低敏输入数据块 overview；其中同步分析响应依赖本次已持久化的 `analysis_history.context_snapshot`，`SAVE_CONTEXT_SNAPSHOT=false` 时新记录不保证返回 overview。`details.context_snapshot` 会剥离该顶层字段，不返回完整 `AnalysisContextPack` 或 Prompt summary。
-> 说明：`POST /api/v1/agent/chat` 与 `POST /api/v1/agent/chat/stream` 会把前端传入的 `context.stock_code` 作为问股当前标的基线，并在 `context.report_language` 缺失时使用全局 `REPORT_LANGUAGE`；调用方显式提供的 `context.report_language` 保持优先。服务端会先重新判定 stock scope。前端从历史报告进入问股后会持续发送 active stock context；切回或重载已有会话时，会根据已加载的历史用户消息恢复基础 `{stock_code, stock_name: null}`。服务端会在每轮消息中重新判定 `maintain` / `switch` / `compare`：未明确切换时，带 `stock_code` 的股票工具调用只能访问当前标的；显式切换会清理旧标的历史摘要和预取数据；含比较/对比/vs/差异/相比等明确比较意图或多个非当前明确股票代码的问题允许本轮明确出现的多个代码，但不改写当前标的。若模型误把 TTM、PE、MACD、KDJ 等金融缩写、移动均线语境下的 `MA` 指标词，或 SH/SZ/BJ/HK/SS 等交易所片段当成股票代码调用工具，后端会返回不可重试的 `stock_scope_violation` 工具结果，而不会执行对应股票工具。工具名只解析注册表中的精确名称；任何 provider namespace 或 suffix 都不会路由到已有工具。
+> 问股状态：`POST /api/v1/agent/chat`、`/chat/stream` 由服务端会话快照确定主对象，不把 `context.stock_code` 当作事实；报告 hint 只有完整 canonical／股票或指数类型一致才复用。detail、accepted 和 non-stream 响应提供 `active_stock_context`（code/name/canonical/type）、`session_state_version`、`session_generation`；消息、显式 Skill 与股票在同一接受事务提交，执行消费该快照而不回写股票。明确切股清除旧对象的附带数据；比较只扩大本轮明确 scope。金融缩写／交易所片段误作股票参数仍被真实 scope guard 拒绝，工具名称仍精确匹配。缺少对象的普通策略问题使用空股票 scope，歧义或无法确认的切股返回普通澄清。`context.report_language` 仍优先于全局 `REPORT_LANGUAGE`。已知 generation 可随请求发送，冲突在 SSE 返回 `session_state_conflict`、non-stream 返回 409；请刷新后手动重试，不自动重发。旧 API 新字段全缺时 Web 显示未确认，不从文本推测；部分字段缺失是协议错误。旧历史和非破坏升级／回滚见 [LLM 配置指南](LLM_CONFIG_GUIDE.md#问股会话状态与升级)。
 
-> Skill 会话状态：上述两个 Chat 请求中的顶层 `skills` 为三态字段，也是请求 Skill 选择的唯一权威来源。省略或传 `null` 时沿用该 `session_id` 已保存的选择；会话尚无状态时使用服务器运行时默认 Skill。传 `[]` 表示清空显式选择并使用现有通用/服务器默认执行语义；传非空列表时会按现有 Skill catalog 规则清理、去重并保存。非空列表中有效项与无效项混合时保留有效项；若全部条目均无效，则不会把归一化后的空结果视为显式 `[]`，而是沿用会话状态或运行时默认且不写入空状态。用于复用分析数据的 `context` 中即使残留 `skills` 或 `strategies`，服务端也会移除这些 legacy 字段，不能覆盖顶层三态或会话状态。用户消息与本轮显式 Skill 更新在同一事务中写入，成功后流式接口才发送 `accepted`。`GET /api/v1/agent/chat/sessions/{session_id}` 会在消息之外返回 `session_state.selected_skill_ids`：没有持久化状态时为 `null`，显式清空时为 `[]`，否则为保存的 Skill 列表。Web 端使用该字段恢复持久化选择；对于 `null`，页面可以显示服务器默认 Skill，但未操作直接追问时仍省略 `skills`，不会把历史会话静默转换为显式 Skill 会话。删除会话会同时删除对应状态。
+> Skill 会话状态：顶层 `skills` 是请求选择的唯一来源。省略／`null` 沿用已保存选择，未选择时使用运行时配置默认；显式 `[]` 保存清空并使用内置默认，不启用配置中的非空 Skill。非空列表按现有 catalog 清理去重，混合条目保留有效项，全无效则继承且不写空状态。`context.skills/strategies` 被移除。接受事务同时写消息、显式 Skill 与股票，成功才发 accepted；detail 的 `session_state.selected_skill_ids` 仍分别返回未选择 `null`、清空 `[]` 或已保存列表。Web 区分保存值与待提交草稿；未操作的追问省略选择，冲突不把草稿冒充已保存。删除会话同时删除状态。
 > 说明：`POST /api/v1/backtest/run` 新增 `analysis_date_from` / `analysis_date_to`（`YYYY-MM-DD`）请求参数用于按历史分析日期筛选候选；若 `analysis_date_from > analysis_date_to`，接口返回 400 `invalid_params`。
 > 说明：回测执行成功但无新入库结果时，`BacktestRunResponse.message` 返回可读诊断说明，`diagnostics` 返回排查上下文（示例：`empty_reason`、`analysis_date_from`、`analysis_date_to`、`eval_window_days`、`min_age_days`、`limit`）。
 > 说明：`GET /api/v1/backtest/results`、`GET /api/v1/backtest/performance`、`GET /api/v1/backtest/performance/{code}` 同步支持 `analysis_date_from`、`analysis_date_to`；不传时保持历史行为。

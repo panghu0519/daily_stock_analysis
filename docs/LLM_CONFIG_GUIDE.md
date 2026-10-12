@@ -59,6 +59,28 @@ AGENT_GENERATION_BACKEND=auto
 - Web 设置页的生成后端快速检查只读取已保存的 `.env`、运行时兜底值和未保存草稿；它不会写配置、重载运行时，也不会发起真实模型请求。`available` 只表示当前配置具备尝试运行的条件。JSON 冒烟测试是单独的显式操作，会使用服务端固定的 JSON 提示词和 schema 发起一次真实的生成后端请求，用于验证提取器、JSON 契约、超时、输出限制和 usage-unavailable 语义。
 - `GET /api/v1/system/config/generation-backends/status` 只读取已保存配置；未保存草稿需调用 `POST /api/v1/system/config/generation-backends/status/preview` 或 `POST /api/v1/system/config/generation-backends/smoke-test`。被遮罩的密钥字段会继续沿用已保存值。`health_status` 与 `last_error_code/message` 只代表本次计算结果，不是历史持久健康状态。
 
+### 问股会话状态与升级
+
+服务端统一保存主讨论对象及会话 Skill；LiteLLM single／现有 multi 与 Codex single 接口消费同一次接受快照。省略或 `null` Skill 沿用已保存选择（未选择时使用配置默认）；显式 `[]` 保存清空选择并使用内置默认，不启用配置中的非空 Skill。名称只在服务端索引唯一匹配时确认；比较不切股，模型失败／停止不撤销已接受状态。并发或会话实例冲突时，请手动刷新后重试，页面保留输入与待提交选择，不自动重发。
+
+旧会话只恢复明确代码，不从历史名称造新事实；“分析600519 → 改看宁德时代 → 风险呢”需要再确认，不能继续沿用600519。升级自动追加状态列，不删除消息／Skill／报告。升级或回滚前停止后端，使用 SQLite backup 或停服完整备份（不能在 WAL 活跃时只复制主文件）；保留原配置、数据库位置和数据目录，更新配套后端／Web 后重启，不手工删表／删列。回滚保留新增列，旧代码仍可写消息与 Skill；再次升级若发现回滚期间新增用户消息，先显示未确认，再由用户明确确认对象。旧／新写进程混跑不支持；分离部署升级先后端再 Web，回滚先 Web 再后端。
+
+代码与名称混用时，比较范围包含两者；紧邻的明确代码可消除同名上市地歧义（如 `688981中芯国际`）。`从600519改看300750`／`把600519换成300750` 按操作词关联的目的地确认300750，不因当前已经是300750或重复发送而反向切回600519；每次接受仍保存消息并递增版本。明确切股只开放新对象的工具范围，并移除不匹配的旧报告提示；目的地含多个备选项时需澄清，不能任选最后一个或排除当前对象后猜选。
+
+已有主对象时，`看看近期走势`／`分析一下财务状况`／`分析风险` 正常继续分析，保留原确认来源和时间；`分析300750` 或唯一匹配名称仍可确认新对象。单独的“分析／看看”加尾随文本不证明切股；明确但无法确认的“改看…”需澄清，不启动分析。旧历史沿用同一方向与动作判定，但只用有效明确代码建立事实：普通追问保留候选，无法确认的新切换使旧候选失效，后续追问不能复活它；后续明确代码可重新建立。历史名称仅作为目标变化证据，不补造确认事实；读取恢复结果不写回股票或递增版本。
+
+否定、询问、条件或引用中的切换不作为肯定确认：`不要改看300750，继续分析600519` 维持600519；`是否改看300750？` 保留对象并澄清，不开放300750。代码和名称按实际出现位置解释；旧历史只有目的地位置的有效代码能确认，句子另一处同码不能替历史名称造事实。首次单独输入有效代码／唯一名称仍可确认，但任意文本中的唯一提及不自动确认。
+
+`如果600519下跌，就改看300750` 的相邻条件与后件即使被逗号分隔，也只保存问题并澄清，不立即切股或启动分析；旧历史恢复同样不把它当成新确认。被否定的强／弱／选择比较不贡献参与对象，例如 `不要研究600519和300750的区别，继续分析600519` 仍正常分析600519，工具范围只有600519。独立分句中的肯定请求不被整条消息的条件／否定屏蔽。
+
+问股个股回测工具的汇总、明细、总数与分页共同使用 guard 已验证的市场身份；合法前缀／后缀与现有 CN 写入器的数字存储键均可读取，不重新按裸码索引选择其他市场。数字键仅由已验证 SH／SZ／BJ 对象按原写入规范生成；明细须关联同对象分析来源，来源中的明确其他市场不被认领。数字汇总须有同一回测窗口／引擎的同对象明细依据，存在冲突数字来源时不认领该汇总；缺失可证明归属的数据正常返回无数据。没有市场字段的正常旧 CN 分析沿用原裸码存储约定，不一律排除数字键。未提供严格目标的原 service／repository 入口保持 legacy 行为，不迁移或改写历史数据。此内部目标参数仅用于现有工具的汇总／明细读取，不支持日期／phase 动态聚合；显式请求不支持的组合会报错，不丢弃身份约束。
+
+普通追问中的顺带提及不扩展工具范围。严格 Chat 的现有标的工具共用身份、scope 与适用性检查，使用本次工具调用验证好的目标读取缓存及选择数据源；日线、技术分析和实时行情保留股票／指数区分，缓存缺失不改查同码股票。执行前必要身份失效只拒绝受影响对象，其他仍可确认的 scope 成员不连带禁用；验证后同一次调用不再读取注册表重新分类。筹码、公司资料、资金流和个股回测不支持指数，明确返回不支持；原市场与 ETF 条件保留。严格自定义工具未声明适用类型时只拒绝该调用。新闻对象由已确认身份／名称决定，不采用模型猜测的另一股票名称。
+
+同名会话的当前 Bot 与 Web 可以继续交替提问：Web 已确认对象后，Bot 普通追问使用该对象的严格工具范围，合法比较只为本轮增加比较对象；两者都保留 Web 主对象及其确认来源／时间，不递增股票状态版本。Bot 不独立持久化新主对象；明确切股或无法安全维持旧对象时，Web 状态进入待重新确认，不能继续声称旧对象可靠。真正旧代码／回滚期间的未知用户写入仍要求重新确认，不能当作当前状态感知 Bot。当前 Bot 提交校验准备快照的实例、版本和最新用户消息锚点；期间已有新接受则拒绝旧提交，不追加旧问题或自动重试模型。回复、provider trace 和摘要仍绑定该次读取的会话实例与真实消息来源，删除后重建不会接收旧实例的迟到写入。Web 的迟到初始列表可以更新列表展示，不能清空新请求／新接受实例或取消其 stream；正常的无会话恢复、切换和新建仍使用既有逻辑。
+
+这不改变模型路由、Phase 2 或 Codex 工具权限。Gate 0B 的受影响真实 Codex 路径仍为 BLOCKED；受控执行端的状态验证不能证明真实运行层或所有平台升级通过。
+
 ### Codex 本地 Agent（Phase 6 实验原型）
 
 `AGENT_BACKEND` 只决定现有问股 Chat 的运行方式，不影响普通报告、定时分析、大盘复盘、普通 Agent 分析 pipeline、LiteLLM Multi Agent 或 Deep Research：
@@ -77,6 +99,7 @@ Web 启用步骤：打开「设置 → Agent 设置 → 问股生成方式」，
 - Phase 6 的 Codex App Server Agent 当前支持 macOS、Linux，以及 DSA 后端完整运行于 WSL 的环境；原生 Windows 后端会在状态检查和 transport 启动前明确拒绝。此限制不影响 Phase 2 `GENERATION_BACKEND=codex_cli` 已有的 Windows 生成能力。
 - Codex 当前只开放已保存分析上下文、全局回测汇总和策略回测汇总的只读查询。本期只验证并承诺这三个工具的独立进程、停止、超时和回收闭环；实时行情、新闻、市场热点、技术指标重算、个股回测明细和持仓工具未纳入本期验证，因此不会出现在 Codex 的工具列表中。需要这些能力时，请在 Web 中选择「默认模型」。明确股票代码或 Web 已选择的唯一股票只会为已开放的历史分析上下文工具建立股票范围；遇到同名歧义时不会猜测。
 - 该能力不是离线模型。股票代码、问题、新闻、持仓上下文和脱敏后的工具结果可能由 Codex 自身配置的服务处理。
+- Codex 问股会传递当前激活的交易 Skill 指令。省略选择时沿用会话已保存选择（新会话使用默认技能），显式空列表清除会话选择并回到默认技能。Skill 只用于解读三个只读工具返回的已保存数据，不能增加工具权限；所需数据或能力不足时必须说明缺失项，不能声称完整执行了技能。
 - 当前只支持 single-agent Chat；不支持 Codex Multi Agent 或 Codex Deep Research。现有 LiteLLM Multi Agent 与 Deep Research 不受影响。
 - 每次 Chat 都创建新的 ephemeral App Server thread；DSA 继续保存原有可见会话历史，并在下一轮注入，但不会注入 LiteLLM provider trace。Web 客户端不会收到 chain-of-thought、原始 JSON-RPC、stderr 或完整工具参数/结果；Codex 只接收完成该轮分析所需的脱敏工具结果。
 - 用户停止问股时，页面会先显示“正在停止”。DSA 会中断 Codex turn，并结束、回收本轮独立运行的工具进程；只有确认 Codex 与工具进程均已退出后，原问股请求才返回最终“已停止”。超时和客户端断开也遵守同一清理边界，不会在后台仍有本轮任务时提前宣告结束。该契约仅作用于 Codex，不改变默认 LiteLLM Agent 的执行方式。
@@ -467,7 +490,7 @@ model_list:
 
 - 运行时选择：`GENERATION_BACKEND`、`GENERATION_FALLBACK_BACKEND`、`GENERATION_BACKEND_TIMEOUT_SECONDS`、`GENERATION_BACKEND_MAX_OUTPUT_BYTES`、`GENERATION_BACKEND_MAX_CONCURRENCY`、`LOCAL_CLI_BACKEND_MAX_CONCURRENCY`、`AGENT_GENERATION_BACKEND`、`LLM_CHANNELS`、`LITELLM_MODEL`、`LITELLM_FALLBACK_MODELS`、`AGENT_LITELLM_MODEL`、`VISION_MODEL`、`VISION_PROVIDER_PRIORITY`、`LLM_TEMPERATURE`、`LLM_USAGE_HMAC_SECRET`、`LLM_USAGE_HMAC_KEY_VERSION`、`LLM_PROMPT_CACHE_TELEMETRY_ENABLED`、`LLM_PROMPT_CACHE_HINTS_ENABLED`、`LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL`
 - 多 Key：`GEMINI_API_KEYS`、`ANTHROPIC_API_KEYS`、`OPENAI_API_KEYS`、`DEEPSEEK_API_KEYS`（当前 workflow 仅从 repository secrets 导入，不会读取同名 Variables）
-- 常用渠道名：`primary`、`secondary`、`aihubmix`、`deepseek`、`dashscope`、`zhipu`、`moonshot`、`minimax`、`volcengine`、`siliconflow`、`openrouter`、`gemini`、`anthropic`、`openai`、`ollama`
+- 常用渠道名：`primary`、`secondary`、`aihubmix`、`deepseek`、`dashscope`、`zhipu`、`moonshot`、`minimax`、`volcengine`、`siliconflow`、`openrouter`、`requesty`、`gemini`、`anthropic`、`openai`、`ollama`
 
 例如在 GitHub Actions 中配置 `LLM_CHANNELS=primary,deepseek` 时，需同步配置 `LLM_PRIMARY_*` / `LLM_DEEPSEEK_*`。其中 `LLM_<NAME>_API_KEY` / `LLM_<NAME>_API_KEYS` 当前也仅从 repository secrets 导入；如果你把这些值放在 Variables，运行时不会生效。若使用自定义渠道名（如 `my_proxy`），GitHub Actions 还必须在 workflow `env:` 中显式新增对应的 `LLM_MY_PROXY_*` 映射；本地 `.env` 和 Docker 不受这个限制。
 
